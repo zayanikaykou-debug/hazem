@@ -1,0 +1,6 @@
+{
+  "name": "Maison Valmont — Barbier Paris",
+  "description": "Salon de coiffure et barbier haut de gamme à Paris. Réservation en ligne rapide, prestations sur mesure et espace de gestion dédié.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
