@@ -395,19 +395,46 @@ export function initializeDatabaseSeed(): void {
     }
   }
 
+  // Clean up old pre-rebrand placeholder appointments (Maison Valmont / Test Client) if present
+  const legacyPlaceholder = db
+    .prepare("SELECT COUNT(*) as count FROM appointments WHERE reference LIKE 'MV-%'")
+    .get() as { count: number };
+  if (legacyPlaceholder.count > 0) {
+    db.prepare("DELETE FROM appointments WHERE reference LIKE 'MV-%' OR reference = 'HC-261115-1652'").run();
+    db.prepare(
+      "DELETE FROM customers WHERE phone LIKE '06 %' OR phone LIKE '07 %' OR (first_name = 'Test' AND last_name = 'Client')"
+    ).run();
+  }
+
   const apptCount = db.prepare('SELECT COUNT(*) as count FROM appointments').get() as { count: number };
   if (apptCount.count === 0) {
+    const yesterday = formatLocalDate(-1);
     const today = formatLocalDate(0);
     const tomorrow = formatLocalDate(1);
     const dayAfter = formatLocalDate(2);
+    const inThreeDays = formatLocalDate(3);
 
-    const insertCustomer = db.prepare(
-      'INSERT INTO customers (first_name, last_name, phone) VALUES (?, ?, ?)'
+    const upsertCustomer = db.prepare(
+      'INSERT INTO customers (first_name, last_name, phone) VALUES (?, ?, ?) ON CONFLICT(phone) DO UPDATE SET first_name = excluded.first_name, last_name = excluded.last_name'
     );
-    const c1 = Number(insertCustomer.run('Karim', 'Youssef', '25 412 890').lastInsertRowid);
-    const c2 = Number(insertCustomer.run('Mohamed', 'Mahbouli', '52 719 450').lastInsertRowid);
-    const c3 = Number(insertCustomer.run('Adam', 'Lajmi', '98 304 621').lastInsertRowid);
-    const c4 = Number(insertCustomer.run('Yassine', 'Trabelsi', '22 891 340').lastInsertRowid);
+    const getCustomerId = (first: string, last: string, phone: string): number => {
+      upsertCustomer.run(first, last, phone);
+      const row = db.prepare('SELECT id FROM customers WHERE phone = ?').get(phone) as { id: number };
+      return row.id;
+    };
+
+    const cAhmed = getCustomerId('Ahmed', 'Ben Ali', '25 412 890');
+    const cYoussef = getCustomerId('Youssef', 'Trabelsi', '52 719 450');
+    const cMehdi = getCustomerId('Mehdi', 'Gharbi', '98 304 621');
+    const cBilel = getCustomerId('Bilel', 'Jaziri', '22 891 340');
+    const cAmine = getCustomerId('Amine', 'Mansouri', '55 640 218');
+    const cSkander = getCustomerId('Skander', 'Bouazizi', '29 514 703');
+    const cRami = getCustomerId('Rami', 'Khelifi', '94 128 560');
+    const cHamza = getCustomerId('Hamza', 'Mejri', '24 775 912');
+    const cOussama = getCustomerId('Oussama', 'Chaabane', '50 932 145');
+    const cNizar = getCustomerId('Nizar', 'Haddad', '27 380 614');
+    const cFiras = getCustomerId('Firas', 'Belhaj', '97 215 809');
+    const cSami = getCustomerId('Sami', 'Tounsi', '58 461 230');
 
     const insertAppt = db.prepare(`
       INSERT INTO appointments (
@@ -416,9 +443,26 @@ export function initializeDatabaseSeed(): void {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    insertAppt.run('HC-261112-1042', c1, 3, 'Coupe + Barbe', today, '14:00', '15:00', 60, 35, 'confirmed', '');
-    insertAppt.run('HC-261112-1089', c2, 2, 'Dégradé (Fade)', today, '16:30', '17:10', 40, 25, 'confirmed', '');
-    insertAppt.run('HC-261113-2015', c3, 1, 'Coupe classique', tomorrow, '11:00', '11:30', 30, 20, 'confirmed', '');
-    insertAppt.run('HC-261114-3091', c4, 5, 'Rasage traditionnel', dayAfter, '17:00', '17:45', 45, 25, 'pending', '');
+    const compact = (d: string) => d.replace(/-/g, '').slice(2);
+
+    // Yesterday (completed / cancelled history)
+    insertAppt.run(`HC-${compact(yesterday)}-1012`, cSami, 3, 'Coupe + Barbe', yesterday, '11:00', '12:00', 60, 35, 'completed', 'Client fidèle');
+    insertAppt.run(`HC-${compact(yesterday)}-1045`, cFiras, 2, 'Dégradé (Fade)', yesterday, '15:30', '16:10', 40, 25, 'completed', '');
+    insertAppt.run(`HC-${compact(yesterday)}-1078`, cNizar, 1, 'Coupe classique', yesterday, '18:00', '18:30', 30, 20, 'cancelled', 'Reporté par le client');
+
+    // Today (busy schedule for Vue d'ensemble & Calendar)
+    insertAppt.run(`HC-${compact(today)}-2014`, cAhmed, 3, 'Coupe + Barbe', today, '10:30', '11:30', 60, 35, 'completed', 'Dégradé bas + contour barbe');
+    insertAppt.run(`HC-${compact(today)}-2039`, cYoussef, 2, 'Dégradé (Fade)', today, '12:00', '12:40', 40, 25, 'confirmed', '');
+    insertAppt.run(`HC-${compact(today)}-2061`, cMehdi, 1, 'Coupe classique', today, '14:30', '15:00', 30, 20, 'confirmed', 'Ciseaux sur le dessus');
+    insertAppt.run(`HC-${compact(today)}-2085`, cBilel, 5, 'Rasage traditionnel', today, '16:00', '16:45', 45, 25, 'confirmed', 'Serviette chaude');
+    insertAppt.run(`HC-${compact(today)}-2103`, cAmine, 4, 'Taille de barbe', today, '18:00', '18:30', 30, 15, 'pending', 'En attente de confirmation');
+
+    // Tomorrow
+    insertAppt.run(`HC-${compact(tomorrow)}-3022`, cSkander, 3, 'Coupe + Barbe', tomorrow, '11:00', '12:00', 60, 35, 'confirmed', 'Coiffure événement');
+    insertAppt.run(`HC-${compact(tomorrow)}-3058`, cRami, 2, 'Dégradé (Fade)', tomorrow, '15:00', '15:40', 40, 25, 'confirmed', '');
+
+    // Day +2 & +3
+    insertAppt.run(`HC-${compact(dayAfter)}-4019`, cHamza, 1, 'Coupe classique', dayAfter, '13:30', '14:00', 30, 20, 'pending', '');
+    insertAppt.run(`HC-${compact(inThreeDays)}-5011`, cOussama, 6, 'Coupe enfant', inThreeDays, '16:30', '17:00', 30, 15, 'confirmed', 'Avec son père');
   }
 }
