@@ -10,7 +10,9 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 async function startServer() {
-  await ensureInitialized();
+  void ensureInitialized().catch((err) => {
+    console.error('Background initialization error:', err);
+  });
 
   const PORT = Number(process.env.PORT) || 3000;
 

@@ -84,21 +84,39 @@ function normalizeSupabaseUrl(raw: string): string {
   }
 }
 
-const rawSupabaseUrl = process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '';
+const rawSupabaseUrl =
+  process.env.SUPABASE_URL ||
+  process.env.NEXT_PUBLIC_SUPABASE_URL ||
+  process.env.VITE_SUPABASE_URL ||
+  process.env.POSTGRES_URL ||
+  '';
 const rawSupabaseKey =
   process.env.SUPABASE_SERVICE_ROLE_KEY ||
+  process.env.SUPABASE_SECRET_KEY ||
+  process.env.SUPABASE_KEY ||
   process.env.SUPABASE_ANON_KEY ||
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+  process.env.VITE_SUPABASE_ANON_KEY ||
   '';
 
 const supabaseUrl = normalizeSupabaseUrl(rawSupabaseUrl);
 const supabaseKey = stripSecretWrapper(rawSupabaseKey);
+
+function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const timeoutSignal = AbortSignal.timeout(3500);
+  const signal =
+    init?.signal && typeof AbortSignal.any === 'function'
+      ? AbortSignal.any([init.signal, timeoutSignal])
+      : init?.signal || timeoutSignal;
+  return fetch(input, { ...init, signal });
+}
 
 let supabaseClient: SupabaseClient | null = null;
 if (supabaseUrl && supabaseKey) {
   try {
     supabaseClient = createClient(supabaseUrl, supabaseKey, {
       auth: { persistSession: false, autoRefreshToken: false },
+      global: { fetch: fetchWithTimeout },
     });
   } catch (err) {
     console.error('Supabase client initialization failed, falling back to SQLite:', err);
@@ -110,6 +128,8 @@ if (supabaseUrl && supabaseKey) {
 
 let supabaseSeeded = false;
 let lastSeedFailureAt = 0;
+let seedFailureCooldownMs = 10000;
+let seedPromise: Promise<boolean> | null = null;
 
 export function isSupabaseConfigured(): boolean {
   return Boolean(supabaseClient && supabaseSeeded);
@@ -151,94 +171,109 @@ function getSqlitePublicBootstrap(): PublicBootstrapData {
 async function ensureSupabaseSeeded(): Promise<boolean> {
   if (!supabaseClient) return false;
   if (supabaseSeeded) return true;
-  if (lastSeedFailureAt && Date.now() - lastSeedFailureAt < 10000) {
+  if (lastSeedFailureAt && Date.now() - lastSeedFailureAt < seedFailureCooldownMs) {
     return false;
   }
-  supabaseSeeded = true;
+  if (seedPromise) {
+    return seedPromise;
+  }
 
-  try {
-    const { count: svcCount, error: svcCheckErr } = await supabaseClient
-      .from('services')
-      .select('id', { count: 'exact', head: true });
-    if (svcCheckErr) {
+  seedPromise = (async () => {
+    try {
+      const { count: svcCount, error: svcCheckErr } = await supabaseClient!
+        .from('services')
+        .select('id', { count: 'exact', head: true });
+      if (svcCheckErr) {
+        supabaseSeeded = false;
+        lastSeedFailureAt = Date.now();
+        const isNetworkErr = /fetch failed|enotfound|timeout|abort|network/i.test(svcCheckErr.message);
+        seedFailureCooldownMs = isNetworkErr ? 120_000 : 10_000;
+        console.error(
+          'Supabase schema check failed (did you run supabase-schema.sql?):',
+          svcCheckErr.message
+        );
+        return false;
+      }
+
+      if (!svcCount || svcCount === 0) {
+        await supabaseClient!.from('services').insert(
+          HAZEM_DEFAULT_SERVICES.map(([name, description, price, duration_minutes, image_url, sort_order]) => ({
+            name,
+            description,
+            price,
+            duration_minutes,
+            image_url,
+            is_active: 1,
+            sort_order,
+          }))
+        );
+      }
+
+      const { count: hoursCount } = await supabaseClient!
+        .from('business_hours')
+        .select('day_of_week', { count: 'exact', head: true });
+      if (!hoursCount || hoursCount === 0) {
+        await supabaseClient!.from('business_hours').insert(
+          HAZEM_DEFAULT_HOURS.map(([day_of_week, day_name, is_open, open_time, close_time]) => ({
+            day_of_week,
+            day_name,
+            is_open,
+            open_time,
+            close_time,
+          }))
+        );
+      }
+
+      const { count: galCount } = await supabaseClient!
+        .from('gallery_images')
+        .select('id', { count: 'exact', head: true });
+      if (!galCount || galCount === 0) {
+        await supabaseClient!.from('gallery_images').insert(
+          HAZEM_GALLERY_PHOTOS.map(([title, category, image_url, sort_order]) => ({
+            title,
+            category,
+            image_url,
+            sort_order,
+          }))
+        );
+      }
+
+      const { data: existingSettings } = await supabaseClient!.from('shop_settings').select('key');
+      const existingKeys = new Set((existingSettings || []).map((r: { key: string }) => r.key));
+      const missingSettings = Object.entries(HAZEM_DEFAULT_SETTINGS)
+        .filter(([key]) => !existingKeys.has(key))
+        .map(([key, value]) => ({ key, value }));
+      if (missingSettings.length > 0) {
+        await supabaseClient!.from('shop_settings').upsert(missingSettings, { onConflict: 'key' });
+      }
+
+      const { count: adminCount } = await supabaseClient!
+        .from('admin_users')
+        .select('id', { count: 'exact', head: true });
+      if (!adminCount || adminCount === 0) {
+        const username = process.env.ADMIN_USERNAME || 'admin';
+        const password = process.env.ADMIN_PASSWORD || 'hazem123';
+        await supabaseClient!.from('admin_users').insert({
+          username,
+          password_hash: hashPassword(password),
+          display_name: 'Hazem',
+        });
+      }
+
+      supabaseSeeded = true;
+      lastSeedFailureAt = 0;
+      return true;
+    } catch (err) {
       supabaseSeeded = false;
       lastSeedFailureAt = Date.now();
-      console.error('Supabase schema check failed (did you run supabase-schema.sql?):', svcCheckErr.message);
+      console.error('Supabase initial seed error:', err);
       return false;
+    } finally {
+      seedPromise = null;
     }
+  })();
 
-    if (!svcCount || svcCount === 0) {
-      await supabaseClient.from('services').insert(
-        HAZEM_DEFAULT_SERVICES.map(([name, description, price, duration_minutes, image_url, sort_order]) => ({
-          name,
-          description,
-          price,
-          duration_minutes,
-          image_url,
-          is_active: 1,
-          sort_order,
-        }))
-      );
-    }
-
-    const { count: hoursCount } = await supabaseClient
-      .from('business_hours')
-      .select('day_of_week', { count: 'exact', head: true });
-    if (!hoursCount || hoursCount === 0) {
-      await supabaseClient.from('business_hours').insert(
-        HAZEM_DEFAULT_HOURS.map(([day_of_week, day_name, is_open, open_time, close_time]) => ({
-          day_of_week,
-          day_name,
-          is_open,
-          open_time,
-          close_time,
-        }))
-      );
-    }
-
-    const { count: galCount } = await supabaseClient
-      .from('gallery_images')
-      .select('id', { count: 'exact', head: true });
-    if (!galCount || galCount === 0) {
-      await supabaseClient.from('gallery_images').insert(
-        HAZEM_GALLERY_PHOTOS.map(([title, category, image_url, sort_order]) => ({
-          title,
-          category,
-          image_url,
-          sort_order,
-        }))
-      );
-    }
-
-    const { data: existingSettings } = await supabaseClient.from('shop_settings').select('key');
-    const existingKeys = new Set((existingSettings || []).map((r: { key: string }) => r.key));
-    const missingSettings = Object.entries(HAZEM_DEFAULT_SETTINGS)
-      .filter(([key]) => !existingKeys.has(key))
-      .map(([key, value]) => ({ key, value }));
-    if (missingSettings.length > 0) {
-      await supabaseClient.from('shop_settings').upsert(missingSettings, { onConflict: 'key' });
-    }
-
-    const { count: adminCount } = await supabaseClient
-      .from('admin_users')
-      .select('id', { count: 'exact', head: true });
-    if (!adminCount || adminCount === 0) {
-      const username = process.env.ADMIN_USERNAME || 'admin';
-      const password = process.env.ADMIN_PASSWORD || 'hazem123';
-      await supabaseClient.from('admin_users').insert({
-        username,
-        password_hash: hashPassword(password),
-        display_name: 'Hazem',
-      });
-    }
-    lastSeedFailureAt = 0;
-    return true;
-  } catch (err) {
-    supabaseSeeded = false;
-    lastSeedFailureAt = Date.now();
-    console.error('Supabase initial seed error:', err);
-    return false;
-  }
+  return seedPromise;
 }
 
 const BOOTSTRAP_CACHE_TTL_MS = 15_000;
