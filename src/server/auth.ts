@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -8,15 +9,33 @@ function resolveTokenSecret(): string {
   const envSecret = (process.env.ADMIN_TOKEN_SECRET || '').trim();
   if (envSecret.length >= 16) return envSecret;
 
-  const serviceKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
-  if (serviceKey) {
-    return crypto.createHmac('sha256', 'hazem-coiff-token-v1').update(serviceKey).digest('hex');
+  const stableSeed = (
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SECRET_KEY ||
+    process.env.SUPABASE_KEY ||
+    process.env.SUPABASE_ANON_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    process.env.SUPABASE_URL ||
+    process.env.ADMIN_PASSWORD ||
+    process.env.VERCEL_PROJECT_ID ||
+    process.env.VERCEL_URL ||
+    ''
+  ).trim();
+
+  if (stableSeed) {
+    return crypto.createHmac('sha256', 'hazem-coiff-token-v1').update(stableSeed).digest('hex');
   }
 
-  const secretPath =
-    process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME
-      ? path.join(os.tmpdir(), '.hazem_token_secret')
-      : path.resolve('./data/.token_secret');
+  const isServerless = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+  if (isServerless) {
+    // Deterministic fallback across stateless serverless containers when no env vars are configured
+    return crypto
+      .createHmac('sha256', 'hazem-coiff-serverless-fallback-v1')
+      .update(`${process.env.ADMIN_USERNAME || 'admin'}:hazem-coiff`)
+      .digest('hex');
+  }
+
+  const secretPath = path.resolve('./data/.token_secret');
   try {
     if (fs.existsSync(secretPath)) {
       const existing = fs.readFileSync(secretPath, 'utf8').trim();
@@ -27,7 +46,10 @@ function resolveTokenSecret(): string {
     fs.writeFileSync(secretPath, generated, { mode: 0o600 });
     return generated;
   } catch {
-    return crypto.randomBytes(32).toString('hex');
+    return crypto
+      .createHmac('sha256', 'hazem-coiff-fallback-v1')
+      .update(os.hostname() || 'hazem-coiff')
+      .digest('hex');
   }
 }
 

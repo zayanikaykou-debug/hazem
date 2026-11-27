@@ -754,10 +754,15 @@ export async function authenticateAdmin(
   username: string,
   password: string
 ): Promise<{ id: number; username: string; displayName: string } | null> {
+  const cleanUsername = username.trim();
+  if (!cleanUsername || !password) return null;
+
   if (!supabaseClient || !(await ensureSupabaseSeeded())) {
     const admin = db
-      .prepare('SELECT id, username, password_hash, display_name FROM admin_users WHERE username = ?')
-      .get(username) as
+      .prepare(
+        'SELECT id, username, password_hash, display_name FROM admin_users WHERE lower(username) = lower(?)'
+      )
+      .get(cleanUsername) as
       | { id: number; username: string; password_hash: string; display_name: string }
       | undefined;
 
@@ -771,7 +776,7 @@ export async function authenticateAdmin(
   const { data: admin } = await supabaseClient
     .from('admin_users')
     .select('id, username, password_hash, display_name')
-    .eq('username', username)
+    .ilike('username', cleanUsername)
     .maybeSingle();
 
   if (!admin || !verifyPassword(password, admin.password_hash)) {

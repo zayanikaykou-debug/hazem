@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
 import {
   AlertCircle,
@@ -106,6 +106,7 @@ export function AdminDashboard({
   const [adminUser, setAdminUser] = useState<{ username: string; displayName: string } | null>(
     null
   );
+  const justLoggedInTokenRef = useRef<string | null>(null);
 
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -199,14 +200,29 @@ export function AdminDashboard({
       setCheckingAuth(false);
       return;
     }
+    if (justLoggedInTokenRef.current === token) {
+      justLoggedInTokenRef.current = null;
+      setCheckingAuth(false);
+      return;
+    }
+    setCheckingAuth(true);
     verifyAdminSession(token)
       .then((res) => {
         setAdminUser(res.user);
       })
-      .catch(() => {
-        setStoredAdminToken(null);
-        setToken(null);
-        setAdminUser(null);
+      .catch((err: unknown) => {
+        const status = (err as { status?: number })?.status;
+        if (status === 401) {
+          setStoredAdminToken(null);
+          setToken(null);
+          setAdminUser(null);
+          setLoginError('Session expirée. Veuillez vous reconnecter.');
+        } else {
+          // Transient error: clear stored token cleanly with message
+          setStoredAdminToken(null);
+          setToken(null);
+          setAdminUser(null);
+        }
       })
       .finally(() => {
         setCheckingAuth(false);
@@ -230,8 +246,16 @@ export function AdminDashboard({
       setDaysOff(dOff.daysOff);
       setSlotRules(rules.rules);
       setGallery(gal.gallery);
-    } catch (err) {
-      console.error('Failed loading admin data:', err);
+    } catch (err: unknown) {
+      const status = (err as { status?: number })?.status;
+      if (status === 401) {
+        setStoredAdminToken(null);
+        setToken(null);
+        setAdminUser(null);
+        setLoginError('Session expirée ou invalide. Veuillez vous reconnecter.');
+      } else {
+        console.error('Failed loading admin data:', err);
+      }
     }
   }, [token, adminUser]);
 
@@ -337,10 +361,11 @@ export function AdminDashboard({
     setLoggingIn(true);
     setLoginError(null);
     try {
-      const res = await loginAdmin(username, password);
+      const res = await loginAdmin(username.trim(), password);
+      justLoggedInTokenRef.current = res.token;
       setStoredAdminToken(res.token);
-      setToken(res.token);
       setAdminUser(res.user);
+      setToken(res.token);
       setPassword('');
     } catch (err: unknown) {
       const errorObj = err as Error;
@@ -644,6 +669,9 @@ export function AdminDashboard({
                 type="text"
                 required
                 autoComplete="username"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
                 placeholder="admin"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
